@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Layout Report</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+<style>
+body{margin:0;background:#000;color:#fff;font-family:Arial}
+.main{display:grid;grid-template-columns:380px 1fr;height:100vh}
+.panel{background:#10172a;padding:10px;overflow:auto}
+.sec{border:1px solid #1f2a4d;border-radius:10px;padding:10px;margin-bottom:10px}
+#map{height:100%}
+
+/* MOBILE */
+@media (max-width: 768px){
+  .main{
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+  }
+
+  .panel{
+    height:45%;
+    overflow:auto;
+  }
+
+  main{
+    height:55%;
+  }
+
+  #map{
+    height:100%;
+    min-height:300px;
+  }
+}
+
+input,select,button{width:100%;margin-top:5px;padding:8px;border-radius:6px}
+button{cursor:pointer}
+</style>
+</head>
+
+<body>
+<header>
+<h1>Layout Report</h1>
+<div class="pill">Points: <span id="count">0</span> | Done: <span id="doneCount">0</span></div>
+</header>
+
+<div class="main">
+<aside class="panel">
+
+<div class="sec">
+<h3>KMZ</h3>
+<input id="fileInput" type="file" accept=".kmz,.kml" />
+</div>
+
+<div class="sec">
+<h3>Prod Info</h3>
+<label>Team</label>
+<div style="display:flex;gap:8px;align-items:center">
+  <span>Team</span>
+  <input id="teamInput" type="text" style="width:80px" />
+</div>
+
+<label>Date</label>
+<input id="dateInput" type="date" />
+</div>
+
+<div class="sec">
+<h3>LAYOUT DONE</h3>
+<label>Line</label>
+<select id="valLine"></select>
+
+<label>From Point</label>
+<input id="valFrom" type="text" />
+
+<label>To Point</label>
+<input id="valTo" type="text" />
+
+<button id="valDone">Done</button>
+</div>
+
+<div class="sec">
+<h3>SKIP</h3>
+<label><input type="checkbox" id="skipMode" /> Enable Skip Mode</label>
+
+<label>Comment</label>
+<input id="skipComment" type="text" />
+<button id="skipValidate">Validate</button>
+</div>
+
+<div class="sec">
+<button id="shareBtn">SHARE</button>
+</div>
+
+</aside>
+
+<main>
+<div id="map"></div>
+</main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tmcw/togeojson@5.4.0/dist/togeojson.umd.js"></script>
+
+<script>
+
+const state={points:[],map:null,layer:null,selected:new Set()};
+
+function init(){
+  state.map=L.map('map');
+
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    attribution:'Esri World Imagery'
+  }).addTo(state.map);
+
+  state.layer=L.layerGroup().addTo(state.map);
+
+  setTimeout(()=>{
+    state.map.setView([45,5],6);
+    state.map.invalidateSize();
+  },300);
+
+  window.addEventListener('resize',()=>state.map.invalidateSize());
+}
+
+function markerStyle(p){
+  if(state.selected.has(p.id)) return {radius:8,color:'#facc15',fillColor:'#facc15',fillOpacity:1};
+  if(p.skip) return {radius:7,color:'#ef4444',fillColor:'#ef4444',fillOpacity:1};
+  if(p.done) return {radius:7,color:'#22c55e',fillColor:'#22c55e',fillOpacity:1};
+  return {radius:6,color:'#60a5fa',fillColor:'#60a5fa',fillOpacity:1};
+}
+
+function sanitize(str){
+  return String(str).replace(/[<>]/g,'');
+}
+
+function render(){
+  state.layer.clearLayers();
+
+  state.points.forEach(p=>{
+    if(!p.lat) return;
+
+    const marker=L.circleMarker([p.lat,p.lng],markerStyle(p)).addTo(state.layer);
+    const label=sanitize(p.name || `${p.line}-${p.point}`);
+
+    marker.on('click',()=>{
+      const skipMode=document.getElementById('skipMode').checked;
+
+      if(skipMode){
+        if(state.selected.has(p.id)) state.selected.delete(p.id);
+        else state.selected.add(p.id);
+        render();
+      }else{
+        marker.bindPopup(label).openPopup();
+      }
+    });
+  });
+
+  document.getElementById('count').textContent=state.points.length;
+  document.getElementById('doneCount').textContent=state.points.filter(p=>p.done).length;
+}
+
+function refreshValidationLines(){
+  const sel=document.getElementById('valLine');
+  const lines=[...new Set(state.points.map(p=>p.line))];
+  sel.innerHTML=lines.map(l=>`<option value="${l}">${l}</option>`).join('');
+}
+
+document.getElementById('fileInput').addEventListener('change',async e=>{
+  const file=e.target.files[0];
+  if(!file) return;
+
+  try{
+    if(file.name.toLowerCase().endsWith('.kml')){
+      const text=await file.text();
+      loadKML(text);
+    }else{
+      const buffer=await file.arrayBuffer();
+      const zip=await JSZip.loadAsync(buffer);
+      const kmlFile=Object.values(zip.files).find(f=>f.name.endsWith('.kml'));
+      const text=await kmlFile.async('string');
+      loadKML(text);
+    }
+
+    setTimeout(()=>state.map.invalidateSize(),300);
+
+  }catch(err){
+    alert('Error reading KMZ/KML');
+    console.error(err);
+  }
+});
+
+function loadKML(text){
+  const dom=new DOMParser().parseFromString(text,'text/xml');
+  const gj=toGeoJSON.kml(dom);
+
+  state.points=gj.features.map((f,i)=>{
+    const c=f.geometry.coordinates;
+
+    let name=f.properties.name||'';
+    let line='1';
+    let point=i;
+
+    if(name.includes('-')){
+      const parts=name.split('-');
+      if(parts.length===2){
+        line=parts[0];
+        point=parseInt(parts[1]);
+      }
+    }
+
+    return{
+      id:i,
+      name:name,
+      line:line,
+      point:point,
+      lat:c[1],
+      lng:c[0],
+      done:false,
+      skip:false,
+      comment:''
+    };
+  });
+
+  refreshValidationLines();
+  render();
+}
+
+document.getElementById('valDone').addEventListener('click',()=>{
+  const line=document.getElementById('valLine').value;
+  const from=parseInt(document.getElementById('valFrom').value);
+  const to=parseInt(document.getElementById('valTo').value);
+
+  const min=Math.min(from,to);
+  const max=Math.max(from,to);
+
+  state.points.forEach(p=>{
+    if(p.line==line && p.point>=min && p.point<=max){
+      p.done=true;
+    }
+  });
+
+  render();
+});
+
+document.getElementById('skipValidate').addEventListener('click',()=>{
+  const comment=document.getElementById('skipComment').value;
+
+  state.points.forEach(p=>{
+    if(state.selected.has(p.id)){
+      p.skip=true;
+      p.comment=comment;
+    }
+  });
+
+  state.selected.clear();
+  render();
+});
+
+function generateCSV(){
+  const teamNum=document.getElementById('teamInput').value||'';
+  const team=`Team${teamNum}`;
+  const dateRaw=document.getElementById('dateInput').value||'';
+  const date=dateRaw?dateRaw.replace(/-/g,''):'00000000';
+
+  const header="team,date,line,point,done,skip,comment\n";
+
+  const rows=state.points.map(p=>{
+    const safeComment=`"${String(p.comment).replace(/"/g,'""')}"`;
+    return `${team},${date},${p.line},${p.point},${p.done?1:0},${p.skip?1:0},${safeComment}`;
+  });
+
+  const csv=header + rows.join("\n");
+  const filename=`${team}_${date}_layoutreport.csv`;
+
+  return {csv,filename};
+}
+
+document.getElementById('shareBtn').addEventListener('click', async function(){
+  const {csv,filename}=generateCSV();
+  const blob=new Blob([csv],{type:'text/csv'});
+
+  try{
+    if(navigator.share){
+      const file=new File([blob],filename,{type:'text/csv'});
+      await navigator.share({title:'Layout Report',files:[file]});
+      return;
+    }
+  }catch(e){
+    console.log('Share failed → fallback');
+  }
+
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  a.click();
+});
+
+init();
+
+</script>
+
+</body>
+</html>
